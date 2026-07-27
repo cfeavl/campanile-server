@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Campanile</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icona-192.png" />
+<link rel="apple-touch-icon" href="icona-192.png" />
+<meta name="theme-color" content="#1F3A5F" />
+<style>
+  :root {
+    --sfondo: #F7F6F2;
+    --superficie: #FDFCFA;
+    --superficie-chiara: #EDEBE5;
+    --accento: #1F3A5F;
+    --accento-scuro: #152840;
+    --accento-chiaro: #DCE3EC;
+    --testo: #242B33;
+    --testo-attenuato: #767D87;
+    --bordo: #E1DFD9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--sfondo);
+    color: var(--testo);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .contenitore {
+    width: 100%;
+    max-width: 440px;
+    padding: 24px 20px 40px;
+  }
+  .intestazione {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 12px 0 28px;
+  }
+  .intestazione .campana { font-size: 30px; color: var(--accento); }
+  .intestazione h1 { font-size: 26px; margin: 0; font-weight: 600; }
+
+  .schermata { display: none; }
+  .schermata.attiva { display: block; }
+
+  label { display: block; font-weight: 600; margin: 14px 0 6px; font-size: 14px; }
+  input[type=text], input[type=password] {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--bordo);
+    background: var(--superficie-chiara);
+    color: var(--testo);
+    font-size: 16px;
+  }
+  input:focus { outline: 2px solid var(--accento); }
+
+  button {
+    cursor: pointer;
+    border: none;
+    border-radius: 10px;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 600;
+    width: 100%;
+  }
+  .btn-primario { background: var(--accento); color: #fff; margin-top: 20px; }
+  .btn-primario:active { background: var(--accento-scuro); }
+  .btn-primario:disabled { background: var(--bordo); color: var(--testo-attenuato); }
+
+  .btn-secondario {
+    background: var(--superficie-chiara);
+    color: var(--accento-scuro);
+    border: 1px solid var(--bordo);
+  }
+
+  .errore {
+    color: #B85C4A;
+    font-size: 14px;
+    margin-top: 10px;
+    min-height: 18px;
+  }
+
+  .card-campanile {
+    background: var(--superficie);
+    border: 1px solid var(--bordo);
+    border-radius: 16px;
+    padding: 18px;
+    margin-bottom: 20px;
+  }
+  .card-campanile h2 {
+    margin: 0 0 14px;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .griglia-dirette {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .btn-diretta {
+    background: var(--accento);
+    color: #fff;
+    padding: 18px;
+    border-radius: 14px;
+    font-size: 17px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    transition: transform 0.08s;
+  }
+  .btn-diretta:active { transform: scale(0.97); background: var(--accento-scuro); }
+  .btn-diretta.inviato { background: #4C8C5B; }
+  .btn-diretta:disabled { opacity: 0.6; }
+
+  .barra-utente {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+  }
+  .barra-utente span { color: var(--testo-attenuato); font-size: 14px; }
+  .barra-utente button { width: auto; padding: 8px 14px; font-size: 13px; }
+
+  .messaggio-stato {
+    text-align: center;
+    color: var(--testo-attenuato);
+    margin-top: 30px;
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<div class="contenitore">
+
+  <div class="intestazione">
+    <span class="campana">🔔</span>
+    <h1>Campanile</h1>
+  </div>
+
+  <!-- ===================== SCHERMATA LOGIN ===================== -->
+  <div id="schermataLogin" class="schermata attiva">
+    <label for="campoUtente">Utente</label>
+    <input type="text" id="campoUtente" autocomplete="username" />
+
+    <label for="campoPassword">Password</label>
+    <input type="password" id="campoPassword" autocomplete="current-password" />
+
+    <button class="btn-primario" id="bottoneLogin">Accedi</button>
+    <div class="errore" id="erroreLogin"></div>
+  </div>
+
+  <!-- ===================== SCHERMATA PRINCIPALE ===================== -->
+  <div id="schermataPrincipale" class="schermata">
+    <div class="barra-utente">
+      <span id="testoUtente"></span>
+      <button class="btn-secondario" id="bottoneEsci">Esci</button>
+    </div>
+    <div id="elencoCampanili"></div>
+  </div>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

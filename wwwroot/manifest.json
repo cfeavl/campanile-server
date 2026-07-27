@@ -1,0 +1,13 @@
+{
+  "name": "Campanile",
+  "short_name": "Campanile",
+  "description": "Fai suonare le campane della tua parrocchia da remoto.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F7F6F2",
+  "theme_color": "#1F3A5F",
+  "icons": [
+    { "src": "icona-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icona-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

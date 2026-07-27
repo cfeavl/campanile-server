@@ -17,10 +17,11 @@ function mostraSchermata(schermata) {
   schermata.classList.add("attiva");
 }
 
-function salvaSessione(token, utente, campanili) {
+function salvaSessione(token, utente, campanili, admin) {
   localStorage.setItem("campanile_token", token);
   localStorage.setItem("campanile_utente", utente);
   localStorage.setItem("campanile_campanili", JSON.stringify(campanili));
+  localStorage.setItem("campanile_admin", admin ? "1" : "0");
 }
 
 function leggiSessione() {
@@ -30,6 +31,7 @@ function leggiSessione() {
     token,
     utente: localStorage.getItem("campanile_utente"),
     campanili: JSON.parse(localStorage.getItem("campanile_campanili") || "[]"),
+    admin: localStorage.getItem("campanile_admin") === "1",
   };
 }
 
@@ -37,6 +39,7 @@ function esci() {
   localStorage.removeItem("campanile_token");
   localStorage.removeItem("campanile_utente");
   localStorage.removeItem("campanile_campanili");
+  localStorage.removeItem("campanile_admin");
   mostraSchermata(schermataLogin);
 }
 
@@ -67,8 +70,8 @@ async function accedi() {
     }
 
     const dati = await risposta.json();
-    salvaSessione(dati.token, utente, dati.campanili);
-    mostraSchermataPrincipale(utente, dati.campanili);
+    salvaSessione(dati.token, utente, dati.campanili, dati.admin);
+    mostraSchermataPrincipale(utente, dati.campanili, dati.admin);
   } catch {
     erroreLogin.textContent = "Impossibile contattare il server. Controlla la connessione.";
   } finally {
@@ -77,7 +80,7 @@ async function accedi() {
   }
 }
 
-function mostraSchermataPrincipale(utente, campanili) {
+function mostraSchermataPrincipale(utente, campanili, admin) {
   testoUtente.textContent = `Ciao, ${utente}`;
   elencoCampanili.innerHTML = "";
 
@@ -104,8 +107,118 @@ function mostraSchermataPrincipale(utente, campanili) {
     elencoCampanili.appendChild(card);
   }
 
+  const sezioneAdmin = document.getElementById("sezioneAdmin");
+  if (admin) {
+    sezioneAdmin.style.display = "block";
+    caricaPannelloAdmin();
+  } else {
+    sezioneAdmin.style.display = "none";
+  }
+
   mostraSchermata(schermataPrincipale);
 }
+
+async function chiamataAutenticata(percorso, opzioni = {}) {
+  const sessione = leggiSessione();
+  if (!sessione) { esci(); return null; }
+
+  const risposta = await fetch(`${BASE_URL}${percorso}`, {
+    ...opzioni,
+    headers: { ...(opzioni.headers || {}), Authorization: `Bearer ${sessione.token}` },
+  });
+
+  if (risposta.status === 401 || risposta.status === 403) {
+    if (risposta.status === 401) esci();
+    return null;
+  }
+  return risposta;
+}
+
+async function caricaPannelloAdmin() {
+  const rispostaCampanili = await chiamataAutenticata("/api/admin/campanili");
+  const campanili = rispostaCampanili ? await rispostaCampanili.json() : [];
+
+  const listaCampaniliDiv = document.getElementById("listaCampaniliDisponibili");
+  listaCampaniliDiv.innerHTML = "";
+  for (const c of campanili) {
+    const riga = document.createElement("label");
+    riga.style.fontWeight = "normal";
+    riga.style.display = "flex";
+    riga.style.alignItems = "center";
+    riga.style.gap = "8px";
+    riga.innerHTML = `<input type="checkbox" value="${c.id}" style="width:auto;" /> ${c.nome} (${c.id})`;
+    listaCampaniliDiv.appendChild(riga);
+  }
+
+  const rispostaUtenti = await chiamataAutenticata("/api/admin/utenti");
+  const utenti = rispostaUtenti ? await rispostaUtenti.json() : [];
+
+  const listaUtentiDiv = document.getElementById("listaUtenti");
+  listaUtentiDiv.innerHTML = "";
+  for (const u of utenti) {
+    const riga = document.createElement("div");
+    riga.style.display = "flex";
+    riga.style.justifyContent = "space-between";
+    riga.style.alignItems = "center";
+    riga.style.padding = "8px 0";
+    riga.style.borderBottom = "1px solid var(--bordo)";
+    const campaniliUtente = u.campaniliConsentiti?.join(", ") || "nessuno";
+    riga.innerHTML = `<span>${u.nome}${u.admin ? " (admin)" : ""} — ${campaniliUtente}</span>`;
+
+    if (!u.admin) {
+      const bottoneElimina = document.createElement("button");
+      bottoneElimina.textContent = "Elimina";
+      bottoneElimina.className = "btn-secondario";
+      bottoneElimina.style.width = "auto";
+      bottoneElimina.style.padding = "6px 12px";
+      bottoneElimina.addEventListener("click", async () => {
+        await chiamataAutenticata(`/api/admin/utenti/${encodeURIComponent(u.nome)}`, { method: "DELETE" });
+        caricaPannelloAdmin();
+      });
+      riga.appendChild(bottoneElimina);
+    }
+    listaUtentiDiv.appendChild(riga);
+  }
+}
+
+document.getElementById("bottoneAggiungiCampanile").addEventListener("click", async () => {
+  const id = document.getElementById("nuovoCampanileId").value.trim();
+  const nome = document.getElementById("nuovoCampanileNome").value.trim();
+  if (!id || !nome) { alert("Compila sia l'identificativo che il nome."); return; }
+
+  const risposta = await chiamataAutenticata("/api/admin/campanili", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, nome }),
+  });
+  if (risposta && risposta.ok) {
+    document.getElementById("nuovoCampanileId").value = "";
+    document.getElementById("nuovoCampanileNome").value = "";
+    caricaPannelloAdmin();
+  }
+});
+
+document.getElementById("bottoneAggiungiUtente").addEventListener("click", async () => {
+  const nome = document.getElementById("nuovoUtenteNome").value.trim();
+  const password = document.getElementById("nuovoUtentePassword").value;
+  const campaniliConsentiti = Array.from(
+    document.querySelectorAll("#listaCampaniliDisponibili input:checked")
+  ).map(el => el.value);
+
+  if (!nome || !password) { alert("Compila nome utente e password."); return; }
+  if (campaniliConsentiti.length === 0) { alert("Seleziona almeno un campanile per questo utente."); return; }
+
+  const risposta = await chiamataAutenticata("/api/admin/utenti", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nome, password, campaniliConsentiti }),
+  });
+  if (risposta && risposta.ok) {
+    document.getElementById("nuovoUtenteNome").value = "";
+    document.getElementById("nuovoUtentePassword").value = "";
+    caricaPannelloAdmin();
+  }
+});
 
 async function inviaComando(idCampanile, numeroDiretta, bottone) {
   const sessione = leggiSessione();
@@ -154,13 +267,13 @@ bottoneEsci.addEventListener("click", esci);
     });
     if (risposta.ok) {
       const dati = await risposta.json();
-      mostraSchermataPrincipale(dati.utente, dati.campanili);
+      mostraSchermataPrincipale(dati.utente, dati.campanili, dati.admin);
     } else {
       esci();
     }
   } catch {
     // Server irraggiungibile al momento: mostra comunque la schermata principale con i dati
     // salvati, così l'app resta usabile a colpo d'occhio anche con connessione instabile.
-    mostraSchermataPrincipale(sessione.utente, sessione.campanili);
+    mostraSchermataPrincipale(sessione.utente, sessione.campanili, sessione.admin);
   }
 })();

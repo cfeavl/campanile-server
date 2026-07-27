@@ -166,6 +166,36 @@
       <button class="btn-secondario" id="bottoneEsci">Esci</button>
     </div>
     <div id="elencoCampanili"></div>
+
+    <div id="sezioneAdmin" style="display:none; margin-top: 30px;">
+      <hr style="border-color: var(--bordo); margin-bottom: 20px;" />
+      <h2 style="font-size: 18px;">⚙ Amministrazione</h2>
+
+      <div class="card-campanile">
+        <h2 style="font-size:15px;">Aggiungi campanile</h2>
+        <label for="nuovoCampanileId">Identificativo (dalla finestra ⚙ dell'app desktop)</label>
+        <input type="text" id="nuovoCampanileId" />
+        <label for="nuovoCampanileNome">Nome da mostrare</label>
+        <input type="text" id="nuovoCampanileNome" />
+        <button class="btn-primario" id="bottoneAggiungiCampanile">Aggiungi campanile</button>
+      </div>
+
+      <div class="card-campanile">
+        <h2 style="font-size:15px;">Aggiungi utente</h2>
+        <label for="nuovoUtenteNome">Nome utente</label>
+        <input type="text" id="nuovoUtenteNome" />
+        <label for="nuovoUtentePassword">Password</label>
+        <input type="text" id="nuovoUtentePassword" />
+        <label for="nuovoUtenteCampanili">Campanili consentiti (spunta quelli giusti)</label>
+        <div id="listaCampaniliDisponibili"></div>
+        <button class="btn-primario" id="bottoneAggiungiUtente">Aggiungi utente</button>
+      </div>
+
+      <div class="card-campanile">
+        <h2 style="font-size:15px;">Utenti esistenti</h2>
+        <div id="listaUtenti"></div>
+      </div>
+    </div>
   </div>
 
 </div>

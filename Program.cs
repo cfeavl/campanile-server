@@ -3,6 +3,17 @@ using Microsoft.AspNetCore.SignalR;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Nel container di Render, tenere sotto controllo il file di configurazione per eventuali
+// modifiche (comportamento di default di ASP.NET Core) va in conflitto con un limite di sistema
+// (inotify) e manda in crash il programma all'avvio. Non ci serve comunque, quindi lo disattivo.
+builder.Configuration.Sources.Clear();
+builder.Configuration
+    .SetBasePath(builder.Environment.ContentRootPath)
+    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
+    .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: false)
+    .AddEnvironmentVariables();
+
 builder.Services.AddSignalR();
 builder.Services.AddCors(opzioni =>
 {

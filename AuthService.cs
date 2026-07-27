@@ -3,37 +3,29 @@ using System.Text;
 
 namespace Campanile.Server;
 
-public class Utente
-{
-    public string Nome { get; set; } = "";
-    public string PasswordHash { get; set; } = "";
-    public string Salt { get; set; } = "";
-    public List<string> CampaniliConsentiti { get; set; } = [];
-}
-
 public class InfoSessione
 {
     public required string Utente { get; init; }
+    public required bool Admin { get; init; }
     public required List<string> CampaniliConsentiti { get; init; }
     public required DateTime Scadenza { get; init; }
 }
 
 /// <summary>
-/// Gestisce login e verifica dei token. Gli utenti sono definiti in appsettings.json
-/// (o nelle variabili d'ambiente su Render) — niente database da mantenere per una manciata
-/// di persone, e niente rischio di perdere gli utenti se il server gratuito si riavvia.
+/// Gestisce login e verifica dei token. Gli utenti ora vivono nel database Postgres
+/// (non più in appsettings.json), quindi si possono aggiungere/rimuovere senza toccare
+/// codice o GitHub — basta il pannello di amministrazione nella web app.
 /// I token di sessione invece vivono solo in memoria: se il server riavvia, tutti devono
 /// rifare login (accettabile per questo utilizzo, non serve altro).
 /// </summary>
-public class AuthService(IConfiguration configurazione)
+public class AuthService(DatabaseUtenti database)
 {
     private readonly Dictionary<string, InfoSessione> _sessioni = new();
     private readonly object _lucchetto = new();
 
-    public string? Login(string nomeUtente, string password)
+    public async Task<string?> LoginAsync(string nomeUtente, string password)
     {
-        var utenti = configurazione.GetSection("Utenti").Get<List<Utente>>() ?? [];
-        var utente = utenti.FirstOrDefault(u => string.Equals(u.Nome, nomeUtente, StringComparison.OrdinalIgnoreCase));
+        var utente = await database.TrovaUtenteAsync(nomeUtente);
         if (utente is null) return null;
 
         if (!VerificaPassword(password, utente.Salt, utente.PasswordHash))
@@ -43,8 +35,9 @@ public class AuthService(IConfiguration configurazione)
         var sessione = new InfoSessione
         {
             Utente = utente.Nome,
+            Admin = utente.Admin,
             CampaniliConsentiti = utente.CampaniliConsentiti,
-            Scadenza = DateTime.UtcNow.AddDays(30), // lungo apposta: non vogliamo che il parroco debba rifare login spesso
+            Scadenza = DateTime.UtcNow.AddDays(30), // lungo apposta: non vogliamo rifare login spesso
         };
 
         lock (_lucchetto) { _sessioni[token] = sessione; }

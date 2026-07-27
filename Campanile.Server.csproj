@@ -6,4 +6,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- Ripristinato automaticamente da Render/dotnet restore quando c'è connessione (qui nel
+         sandbox di sviluppo non ho accesso a nuget.org per scaricarlo, ma è un pacchetto
+         standard e molto maturo, usato ovunque per Postgres in .NET). -->
+    <PackageReference Include="Npgsql" Version="8.0.5" />
+  </ItemGroup>
+
 </Project>

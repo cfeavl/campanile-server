@@ -3,42 +3,82 @@ using Microsoft.AspNetCore.SignalR;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSignalR();
-builder.Services.AddSingleton<AuthService>();
 builder.Services.AddCors(opzioni =>
 {
-    // In questa fase iniziale accetta chiamate da qualunque origine (la web app remota).
-    // Da restringere al dominio vero della web app una volta pubblicata.
     opzioni.AddDefaultPolicy(policy => policy.AllowAnyHeader().AllowAnyMethod().SetIsOriginAllowed(_ => true).AllowCredentials());
 });
+
+var stringaConnessione = builder.Configuration.GetConnectionString("Postgres")
+    ?? throw new InvalidOperationException("Manca la stringa di connessione 'ConnectionStrings:Postgres'.");
+
+var database = new DatabaseUtenti(stringaConnessione);
+builder.Services.AddSingleton(database);
+builder.Services.AddSingleton<AuthService>();
 
 var app = builder.Build();
 app.UseCors();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
+// All'avvio: crea le tabelle se non esistono, e assicura che esista almeno un amministratore
+// (preso dalla configurazione "AdminIniziale" — serve solo la primissima volta).
+Console.WriteLine($"[Campanile] Stringa di connessione letta, lunghezza={stringaConnessione.Length}, inizia con 'postgresql://'={stringaConnessione.StartsWith("postgresql://")}");
+
+try
+{
+    Console.WriteLine("[Campanile] Avvio AssicuraTabelleAsync...");
+    await database.AssicuraTabelleAsync();
+    Console.WriteLine("[Campanile] Tabelle assicurate con successo.");
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[Campanile] ERRORE in AssicuraTabelleAsync: {ex.GetType().Name}: {ex.Message}");
+    Console.WriteLine(ex.StackTrace);
+}
+
+var nomeAdmin = app.Configuration["AdminIniziale:Nome"];
+var passwordAdmin = app.Configuration["AdminIniziale:Password"];
+Console.WriteLine($"[Campanile] AdminIniziale:Nome presente={!string.IsNullOrWhiteSpace(nomeAdmin)}, AdminIniziale:Password presente={!string.IsNullOrWhiteSpace(passwordAdmin)}");
+
+if (!string.IsNullOrWhiteSpace(nomeAdmin) && !string.IsNullOrWhiteSpace(passwordAdmin))
+{
+    try
+    {
+        var (hash, salt) = AuthService.GeneraHashPassword(passwordAdmin);
+        await database.AssicuraAdminInizialeAsync(nomeAdmin, hash, salt);
+        Console.WriteLine($"[Campanile] Admin iniziale assicurato per l'utente '{nomeAdmin}'.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Campanile] ERRORE in AssicuraAdminInizialeAsync: {ex.GetType().Name}: {ex.Message}");
+        Console.WriteLine(ex.StackTrace);
+    }
+}
+
 app.MapHub<CampanileHub>("/hub/campanile");
 
 app.MapGet("/api/stato", () => "Campanile server attivo.");
 
-app.MapPost("/api/login", (RichiestaLogin richiesta, AuthService auth, IConfiguration config) =>
+app.MapPost("/api/login", async (RichiestaLogin richiesta, AuthService auth, DatabaseUtenti db) =>
 {
-    var token = auth.Login(richiesta.Utente, richiesta.Password);
+    var token = await auth.LoginAsync(richiesta.Utente, richiesta.Password);
     if (token is null)
         return Results.Json(new { errore = "Utente o password non corretti." }, statusCode: 401);
 
     var sessione = auth.Valida(token)!;
-    return Results.Ok(new { token, campanili = CampaniliCon(sessione.CampaniliConsentiti, config) });
+    var campanili = await db.LeggiCampaniliAsync(sessione.CampaniliConsentiti);
+    return Results.Ok(new { token, admin = sessione.Admin, campanili });
 });
 
-app.MapGet("/api/me", (HttpRequest richiesta, AuthService auth, IConfiguration config) =>
+app.MapGet("/api/me", async (HttpRequest richiesta, AuthService auth, DatabaseUtenti db) =>
 {
     var sessione = ValidaRichiesta(richiesta, auth);
     if (sessione is null) return Results.Json(new { errore = "Sessione scaduta, rifai il login." }, statusCode: 401);
-    return Results.Ok(new { utente = sessione.Utente, campanili = CampaniliCon(sessione.CampaniliConsentiti, config) });
+    var campanili = await db.LeggiCampaniliAsync(sessione.CampaniliConsentiti);
+    return Results.Ok(new { utente = sessione.Utente, admin = sessione.Admin, campanili });
 });
 
 // Endpoint chiamato dalla web app remota per far partire una diretta su un campanile specifico.
-// Protetto: serve un token valido e l'utente deve avere il permesso su quel campanile.
 app.MapPost("/api/campanili/{idCampanile}/diretta/{numeroDiretta:int}",
     async (string idCampanile, int numeroDiretta, HttpRequest richiesta, AuthService auth, IHubContext<CampanileHub> hub) =>
     {
@@ -53,6 +93,56 @@ app.MapPost("/api/campanili/{idCampanile}/diretta/{numeroDiretta:int}",
         return Results.Ok(new { inviato = true, idCampanile, numeroDiretta });
     });
 
+// ===================== PANNELLO DI AMMINISTRAZIONE (solo utenti admin) =====================
+
+app.MapGet("/api/admin/utenti", async (HttpRequest richiesta, AuthService auth, DatabaseUtenti db) =>
+{
+    var sessione = ValidaRichiestaAdmin(richiesta, auth);
+    if (sessione is null) return Results.Json(new { errore = "Non autorizzato." }, statusCode: 403);
+    return Results.Ok(await db.LeggiTuttiUtentiAsync());
+});
+
+app.MapGet("/api/admin/campanili", async (HttpRequest richiesta, AuthService auth, DatabaseUtenti db) =>
+{
+    var sessione = ValidaRichiestaAdmin(richiesta, auth);
+    if (sessione is null) return Results.Json(new { errore = "Non autorizzato." }, statusCode: 403);
+    return Results.Ok(await db.LeggiCampaniliAsync());
+});
+
+app.MapPost("/api/admin/campanili", async (RichiestaCampanile richiesta, HttpRequest http, AuthService auth, DatabaseUtenti db) =>
+{
+    var sessione = ValidaRichiestaAdmin(http, auth);
+    if (sessione is null) return Results.Json(new { errore = "Non autorizzato." }, statusCode: 403);
+
+    if (string.IsNullOrWhiteSpace(richiesta.Id) || string.IsNullOrWhiteSpace(richiesta.Nome))
+        return Results.Json(new { errore = "Id e nome sono obbligatori." }, statusCode: 400);
+
+    await db.AggiungiCampanileAsync(richiesta.Id.Trim(), richiesta.Nome.Trim());
+    return Results.Ok(new { fatto = true });
+});
+
+app.MapPost("/api/admin/utenti", async (RichiestaNuovoUtente richiesta, HttpRequest http, AuthService auth, DatabaseUtenti db) =>
+{
+    var sessione = ValidaRichiestaAdmin(http, auth);
+    if (sessione is null) return Results.Json(new { errore = "Non autorizzato." }, statusCode: 403);
+
+    if (string.IsNullOrWhiteSpace(richiesta.Nome) || string.IsNullOrWhiteSpace(richiesta.Password))
+        return Results.Json(new { errore = "Nome utente e password sono obbligatori." }, statusCode: 400);
+
+    var (hash, salt) = AuthService.GeneraHashPassword(richiesta.Password);
+    await db.AggiungiUtenteAsync(richiesta.Nome.Trim(), hash, salt, richiesta.CampaniliConsentiti ?? []);
+    return Results.Ok(new { fatto = true });
+});
+
+app.MapDelete("/api/admin/utenti/{nome}", async (string nome, HttpRequest http, AuthService auth, DatabaseUtenti db) =>
+{
+    var sessione = ValidaRichiestaAdmin(http, auth);
+    if (sessione is null) return Results.Json(new { errore = "Non autorizzato." }, statusCode: 403);
+
+    await db.EliminaUtenteAsync(nome);
+    return Results.Ok(new { fatto = true });
+});
+
 app.Run();
 
 static InfoSessione? ValidaRichiesta(HttpRequest richiesta, AuthService auth)
@@ -62,15 +152,12 @@ static InfoSessione? ValidaRichiesta(HttpRequest richiesta, AuthService auth)
     return auth.Valida(token);
 }
 
-static List<object> CampaniliCon(List<string> id, IConfiguration config)
+static InfoSessione? ValidaRichiestaAdmin(HttpRequest richiesta, AuthService auth)
 {
-    var elenco = config.GetSection("Campanili").Get<List<InfoCampanile>>() ?? [];
-    return id.Select(i =>
-    {
-        var info = elenco.FirstOrDefault(c => c.Id == i);
-        return (object)new { id = i, nome = info?.Nome ?? i };
-    }).ToList();
+    var sessione = ValidaRichiesta(richiesta, auth);
+    return sessione is { Admin: true } ? sessione : null;
 }
 
 public record RichiestaLogin(string Utente, string Password);
-public record InfoCampanile { public string Id { get; init; } = ""; public string Nome { get; init; } = ""; }
+public record RichiestaCampanile(string Id, string Nome);
+public record RichiestaNuovoUtente(string Nome, string Password, List<string>? CampaniliConsentiti);

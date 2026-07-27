@@ -156,6 +156,10 @@ app.MapDelete("/api/admin/utenti/{nome}", async (string nome, HttpRequest http, 
     return Results.Ok(new { fatto = true });
 });
 
+// Qualsiasi indirizzo non riconosciuto (es. un vecchio QR code con un percorso diverso)
+// mostra comunque la pagina principale, invece di un errore "pagina non trovata".
+app.MapFallbackToFile("index.html");
+
 app.Run();
 
 static InfoSessione? ValidaRichiesta(HttpRequest richiesta, AuthService auth)

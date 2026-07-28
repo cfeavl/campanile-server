@@ -1,5 +1,6 @@
 using Campanile.Server;
 using Microsoft.AspNetCore.SignalR;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSignalR();
@@ -8,8 +9,9 @@ builder.Services.AddCors(opzioni =>
     opzioni.AddDefaultPolicy(policy => policy.AllowAnyHeader().AllowAnyMethod().SetIsOriginAllowed(_ => true).AllowCredentials());
 });
 
-var stringaConnessione = builder.Configuration.GetConnectionString("Postgres")
+var stringaConnessioneGrezza = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("Manca la stringa di connessione 'ConnectionStrings:Postgres'.");
+var stringaConnessione = ConvertiStringaConnessione(stringaConnessioneGrezza);
 
 var database = new DatabaseUtenti(stringaConnessione);
 builder.Services.AddSingleton(database);
@@ -209,6 +211,39 @@ static InfoSessione? ValidaRichiesta(HttpRequest richiesta, AuthService auth)
     var intestazione = richiesta.Headers.Authorization.ToString();
     var token = intestazione.StartsWith("Bearer ") ? intestazione["Bearer ".Length..] : null;
     return auth.Valida(token);
+}
+
+/// <summary>
+/// Neon (e molti altri servizi Postgres) forniscono l'indirizzo nel formato "URL"
+/// (postgresql://utente:password@host/database) — ma Npgsql vuole invece il formato classico
+/// "chiave=valore;". Questa funzione converte automaticamente dal primo formato al secondo,
+/// così basta incollare la stringa di Neon così com'è, senza doverla riscrivere a mano.
+/// </summary>
+static string ConvertiStringaConnessione(string valore)
+{
+    if (!valore.StartsWith("postgres://", StringComparison.OrdinalIgnoreCase) &&
+        !valore.StartsWith("postgresql://", StringComparison.OrdinalIgnoreCase))
+    {
+        return valore; // è già nel formato "chiave=valore;" che Npgsql si aspetta
+    }
+
+    var uri = new Uri(valore);
+    var userInfo = uri.UserInfo.Split(':', 2);
+    var username = Uri.UnescapeDataString(userInfo[0]);
+    var password = userInfo.Length > 1 ? Uri.UnescapeDataString(userInfo[1]) : "";
+    var nomeDatabase = uri.AbsolutePath.TrimStart('/');
+
+    var costruttore = new NpgsqlConnectionStringBuilder
+    {
+        Host = uri.Host,
+        Port = uri.Port > 0 ? uri.Port : 5432,
+        Username = username,
+        Password = password,
+        Database = nomeDatabase,
+        SslMode = SslMode.Require,
+    };
+
+    return costruttore.ConnectionString;
 }
 
 static InfoSessione? ValidaRichiestaAdmin(HttpRequest richiesta, AuthService auth)

@@ -227,10 +227,18 @@ async function avviaAscoltoAudio(idCampanile) {
   if (!sessione || !contenitore) return;
 
   try {
-    const risposta = await fetch(`${BASE_URL}/api/campanili/${idCampanile}/audio-in-corso?t=${Date.now()}`, {
-      headers: { Authorization: `Bearer ${sessione.token}` },
-    });
-    if (!risposta.ok) return;
+    // Il file audio viene caricato dall'app desktop in parallelo alla notifica "è partita una
+    // suonata", quindi può volerci un attimo prima che sia pronto: si riprova qualche volta
+    // prima di rinunciare, invece di dare subito errore.
+    let risposta = null;
+    for (let tentativo = 0; tentativo < 6; tentativo++) {
+      risposta = await fetch(`${BASE_URL}/api/campanili/${idCampanile}/audio-in-corso?t=${Date.now()}`, {
+        headers: { Authorization: `Bearer ${sessione.token}` },
+      });
+      if (risposta.ok) break;
+      await new Promise(r => setTimeout(r, 300));
+    }
+    if (!risposta || !risposta.ok) return;
 
     const blob = await risposta.blob();
     const url = URL.createObjectURL(blob);

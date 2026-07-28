@@ -80,7 +80,6 @@ async function accedi() {
   }
 }
 
-let connessioneHub = null;
 const timerBarra = {}; // idCampanile -> { intervalId, secondiTotali, secondiTrascorsi }
 
 async function mostraSchermataPrincipale(utente, campanili, admin) {
@@ -156,37 +155,42 @@ async function mostraSchermataPrincipale(utente, campanili, admin) {
   await avviaAscoltoStatoLive(campanili);
 }
 
-/// Si collega in tempo reale al server per sapere quando una suonata parte/finisce su uno
-/// dei campanili a cui l'utente ha accesso, e aggiorna la barra di avanzamento di conseguenza.
+const statoMostrato = {}; // idCampanile -> nome della suonata attualmente mostrata sulla barra
+let intervalloControllo = null;
+
+/// Controlla periodicamente (invece di affidarsi a una connessione "sempre aperta", che sui
+/// cellulari può addormentarsi o interrompersi) se sta suonando qualcosa su uno dei campanili
+/// a cui l'utente ha accesso, e aggiorna la barra di avanzamento di conseguenza.
 async function avviaAscoltoStatoLive(campanili) {
   const sessione = leggiSessione();
   if (!sessione || campanili.length === 0) return;
 
-  if (connessioneHub) {
-    try { await connessioneHub.stop(); } catch { /* ignora */ }
-  }
+  if (intervalloControllo) clearInterval(intervalloControllo);
 
-  connessioneHub = new signalR.HubConnectionBuilder()
-    .withUrl(`${BASE_URL}/hub/campanile`)
-    .withAutomaticReconnect()
-    .build();
-
-  connessioneHub.on("StatoSuonataAvviata", (idCampanile, nomeSuonata, durataSecondi) => {
-    avviaBarraProgresso(idCampanile, nomeSuonata, durataSecondi);
-  });
-  connessioneHub.on("StatoSuonataFerma", (idCampanile) => {
-    fermaBarraProgresso(idCampanile);
-  });
-
-  try {
-    await connessioneHub.start();
+  const controlla = async () => {
     for (const campanile of campanili) {
-      await connessioneHub.invoke("AscoltaCampanile", campanile.id);
+      try {
+        const risposta = await fetch(`${BASE_URL}/api/campanili/${campanile.id}/stato`, {
+          headers: { Authorization: `Bearer ${sessione.token}` },
+        });
+        if (!risposta.ok) continue;
+        const dati = await risposta.json();
+
+        if (dati.inCorso) {
+          if (statoMostrato[campanile.id] !== dati.nome) {
+            statoMostrato[campanile.id] = dati.nome;
+            avviaBarraProgresso(campanile.id, dati.nome, dati.durataSecondi, dati.secondiTrascorsi);
+          }
+        } else if (statoMostrato[campanile.id]) {
+          delete statoMostrato[campanile.id];
+          fermaBarraProgresso(campanile.id);
+        }
+      } catch { /* va bene, si riprova al giro successivo tra poco */ }
     }
-  } catch {
-    // Non gravissimo: la barra di avanzamento in tempo reale non funzionerà finché non si
-    // ricollega da solo, ma il resto della pagina (far partire le dirette) continua a funzionare.
-  }
+  };
+
+  await controlla(); // subito, senza aspettare il primo intervallo
+  intervalloControllo = setInterval(controlla, 1500);
 }
 
 function formattaTempo(secondiTotali) {
@@ -261,7 +265,7 @@ async function avviaAscoltoAudio(idCampanile) {
   } catch { /* connessione instabile: niente audio questa volta, il resto continua a funzionare */ }
 }
 
-function avviaBarraProgresso(idCampanile, nomeSuonata, durataSecondi) {
+function avviaBarraProgresso(idCampanile, nomeSuonata, durataSecondi, secondiGiaTrascorsi = 0) {
   const contenitore = document.getElementById(`stato-${idCampanile}`);
   if (!contenitore) return;
 
@@ -271,14 +275,17 @@ function avviaBarraProgresso(idCampanile, nomeSuonata, durataSecondi) {
   contenitore.querySelector(".nome-suonata").textContent = nomeSuonata;
   const riempimento = contenitore.querySelector(".riempimento");
   const tempo = contenitore.querySelector(".tempo");
-  riempimento.style.width = "0%";
-  tempo.textContent = `0:00 / ${formattaTempo(durataSecondi)}`;
+  riempimento.style.width = `${Math.min(100, (secondiGiaTrascorsi / durataSecondi) * 100)}%`;
+  tempo.textContent = `${formattaTempo(secondiGiaTrascorsi)} / ${formattaTempo(durataSecondi)}`;
 
   if (ascoltoAttivo[idCampanile]) {
     avviaAscoltoAudio(idCampanile);
   }
 
-  const inizio = Date.now();
+  // Se l'abbiamo scoperta già a metà (grazie al controllo periodico, non a una notifica
+  // istantanea), il "punto di partenza" del conteggio va spostato indietro di conseguenza,
+  // così il tempo mostrato resta corretto fin da subito.
+  const inizio = Date.now() - secondiGiaTrascorsi * 1000;
   const intervalId = setInterval(() => {
     const trascorsi = (Date.now() - inizio) / 1000;
     const percentuale = Math.min(100, (trascorsi / durataSecondi) * 100);
@@ -318,12 +325,17 @@ async function fermaSuono(idCampanile) {
   const sessione = leggiSessione();
   if (!sessione) { esci(); return; }
 
+  // Feedback immediato: non aspettare il prossimo controllo periodico (fino a 1,5 secondi)
+  // per far sparire la barra, visto che è stato l'utente stesso a chiedere di fermarla.
+  delete statoMostrato[idCampanile];
+  fermaBarraProgresso(idCampanile);
+
   try {
     await fetch(`${BASE_URL}/api/campanili/${idCampanile}/ferma`, {
       method: "POST",
       headers: { Authorization: `Bearer ${sessione.token}` },
     });
-  } catch { /* la barra si aggiornerà comunque quando arriva la conferma, o resta com'è */ }
+  } catch { /* la barra resta comunque nascosta lato telefono; il campanile riceverà il comando appena si ricollega */ }
 }
 
 async function chiamataAutenticata(percorso, opzioni = {}) {

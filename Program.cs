@@ -158,6 +158,24 @@ app.MapPut("/api/campanili/{idCampanile}/audio-in-corso", async (string idCampan
     return Results.Ok();
 });
 
+// L'app desktop avvisa qui quando parte una suonata — una semplice richiesta diretta invece
+// che tramite la connessione SignalR, così non dipende dal fatto che quella connessione sia
+// "viva" proprio in quel preciso istante (altrimenti l'avviso rischiava di perdersi o arrivare
+// in ritardo se la connessione si era momentaneamente addormentata).
+app.MapPost("/api/campanili/{idCampanile}/notifica-avviata",
+    (string idCampanile, RichiestaNotificaAvviata richiesta, StatoCampanili stato) =>
+    {
+        stato.ImpostaRiproduzioneInCorso(idCampanile, richiesta.Nome, richiesta.DurataSecondi);
+        return Results.Ok();
+    });
+
+// L'app desktop avvisa qui quando una suonata finisce o viene fermata.
+app.MapPost("/api/campanili/{idCampanile}/notifica-ferma", (string idCampanile, StatoCampanili stato) =>
+{
+    stato.ImpostaRiproduzioneFerma(idCampanile);
+    return Results.Ok();
+});
+
 // Il telefono scarica qui l'audio della suonata in corso, per riprodurlo (funzione "ascolta in diretta").
 app.MapGet("/api/campanili/{idCampanile}/audio-in-corso", (string idCampanile, HttpRequest richiesta, AuthService auth, StatoCampanili stato) =>
 {
@@ -276,3 +294,4 @@ static InfoSessione? ValidaRichiestaAdmin(HttpRequest richiesta, AuthService aut
 public record RichiestaLogin(string Utente, string Password);
 public record RichiestaCampanile(string Id, string Nome);
 public record RichiestaNuovoUtente(string Nome, string Password, List<string>? CampaniliConsentiti);
+public record RichiestaNotificaAvviata(string Nome, double DurataSecondi);

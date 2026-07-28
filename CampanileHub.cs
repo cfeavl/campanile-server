@@ -39,12 +39,14 @@ public class CampanileHub(StatoCampanili statoCampanili) : Hub
     /// nella web app il nome e la barra di avanzamento.</summary>
     public async Task NotificaSuonataAvviata(string idCampanile, string nomeSuonata, double durataSecondi)
     {
+        statoCampanili.ImpostaRiproduzioneInCorso(idCampanile, nomeSuonata, durataSecondi);
         await Clients.Group(GruppoPer(idCampanile)).SendAsync("StatoSuonataAvviata", idCampanile, nomeSuonata, durataSecondi);
     }
 
     /// <summary>Chiamato dall'app desktop quando la suonata finisce o viene fermata.</summary>
     public async Task NotificaSuonataFerma(string idCampanile)
     {
+        statoCampanili.ImpostaRiproduzioneFerma(idCampanile);
         await Clients.Group(GruppoPer(idCampanile)).SendAsync("StatoSuonataFerma", idCampanile);
     }
 
@@ -58,6 +60,7 @@ public class StatoCampanili
 {
     private readonly Dictionary<string, string[]> _nomiDirette = new();
     private readonly Dictionary<string, (byte[] Dati, string TipoContenuto)> _audioInCorso = new();
+    private readonly Dictionary<string, (string Nome, double DurataSecondi, DateTime IniziataAlle)> _riproduzioneInCorso = new();
     private readonly object _lucchetto = new();
 
     public void ImpostaNomiDirette(string idCampanile, string[] nomi)
@@ -85,6 +88,40 @@ public class StatoCampanili
         lock (_lucchetto)
         {
             return _audioInCorso.TryGetValue(idCampanile, out var audio) ? audio : null;
+        }
+    }
+
+    public void ImpostaRiproduzioneInCorso(string idCampanile, string nomeSuonata, double durataSecondi)
+    {
+        lock (_lucchetto)
+        {
+            _riproduzioneInCorso[idCampanile] = (nomeSuonata, durataSecondi, DateTime.UtcNow);
+        }
+    }
+
+    public void ImpostaRiproduzioneFerma(string idCampanile)
+    {
+        lock (_lucchetto) { _riproduzioneInCorso.Remove(idCampanile); }
+    }
+
+    /// <summary>Cosa sta suonando adesso su questo campanile, se c'è qualcosa in corso — usato
+    /// dalla web app per controllare periodicamente lo stato (più affidabile della sola
+    /// notifica in tempo reale, che su rete mobile può arrivare in ritardo se la connessione
+    /// si era addormentata).</summary>
+    public (string Nome, double DurataSecondi, double SecondiTrascorsi)? LeggiRiproduzioneInCorso(string idCampanile)
+    {
+        lock (_lucchetto)
+        {
+            if (!_riproduzioneInCorso.TryGetValue(idCampanile, out var stato)) return null;
+
+            var trascorsi = (DateTime.UtcNow - stato.IniziataAlle).TotalSeconds;
+            if (trascorsi >= stato.DurataSecondi)
+            {
+                _riproduzioneInCorso.Remove(idCampanile); // finita da sola, anche se nessuno ha mai avvisato esplicitamente
+                return null;
+            }
+
+            return (stato.Nome, stato.DurataSecondi, trascorsi);
         }
     }
 }

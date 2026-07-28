@@ -126,6 +126,27 @@ app.MapGet("/api/campanili/{idCampanile}/dirette",
         return Results.Ok(stato.LeggiNomiDirette(idCampanile));
     });
 
+// Dice se in questo momento sta suonando qualcosa su questo campanile, e da quanto tempo —
+// la web app lo controlla ogni 1-2 secondi, invece di affidarsi solo alla notifica in tempo
+// reale (che su rete mobile può arrivare in ritardo se la connessione si era addormentata).
+app.MapGet("/api/campanili/{idCampanile}/stato",
+    (string idCampanile, HttpRequest richiesta, AuthService auth, StatoCampanili stato) =>
+    {
+        var sessione = ValidaRichiesta(richiesta, auth);
+        if (sessione is null)
+            return Results.Json(new { errore = "Sessione scaduta, rifai il login." }, statusCode: 401);
+
+        if (!sessione.CampaniliConsentiti.Contains(idCampanile))
+            return Results.Json(new { errore = "Non hai accesso a questo campanile." }, statusCode: 403);
+
+        var riproduzione = stato.LeggiRiproduzioneInCorso(idCampanile);
+        if (riproduzione is null)
+            return Results.Ok(new { inCorso = false });
+
+        var (nome, durataSecondi, secondiTrascorsi) = riproduzione.Value;
+        return Results.Ok(new { inCorso = true, nome, durataSecondi, secondiTrascorsi });
+    });
+
 // L'app desktop carica qui il file che sta suonando in questo momento, così chi vuole
 // "ascoltare in diretta" da remoto può scaricarlo e riprodurlo.
 app.MapPut("/api/campanili/{idCampanile}/audio-in-corso", async (string idCampanile, HttpRequest richiesta, StatoCampanili stato) =>

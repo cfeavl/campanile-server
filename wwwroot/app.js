@@ -71,7 +71,7 @@ async function accedi() {
 
     const dati = await risposta.json();
     salvaSessione(dati.token, utente, dati.campanili, dati.admin);
-    mostraSchermataPrincipale(utente, dati.campanili, dati.admin);
+    await mostraSchermataPrincipale(utente, dati.campanili, dati.admin);
   } catch {
     erroreLogin.textContent = "Impossibile contattare il server. Controlla la connessione.";
   } finally {
@@ -80,9 +80,14 @@ async function accedi() {
   }
 }
 
-function mostraSchermataPrincipale(utente, campanili, admin) {
+let connessioneHub = null;
+const timerBarra = {}; // idCampanile -> { intervalId, secondiTotali, secondiTrascorsi }
+
+async function mostraSchermataPrincipale(utente, campanili, admin) {
   testoUtente.textContent = `Ciao, ${utente}`;
   elencoCampanili.innerHTML = "";
+
+  const sessione = leggiSessione();
 
   for (const campanile of campanili) {
     const card = document.createElement("div");
@@ -92,13 +97,45 @@ function mostraSchermataPrincipale(utente, campanili, admin) {
     titolo.innerHTML = `🔔 ${campanile.nome}`;
     card.appendChild(titolo);
 
+    // Barra "sta suonando", nascosta finché non arriva davvero qualcosa.
+    const statoRiproduzione = document.createElement("div");
+    statoRiproduzione.className = "stato-riproduzione";
+    statoRiproduzione.id = `stato-${campanile.id}`;
+    statoRiproduzione.innerHTML = `
+      <div class="intestazione">
+        <span class="nome-suonata"></span>
+        <span class="tempo">0:00 / 0:00</span>
+      </div>
+      <div class="barra-progresso"><div class="riempimento"></div></div>
+      <div class="barra-azioni">
+        <button class="btn-ascolta">🔇 Ascolta dal vivo</button>
+        <button class="btn-ferma">⏹ Ferma suono</button>
+      </div>
+      <audio class="audio-diretta" style="display:none;"></audio>
+    `;
+    statoRiproduzione.querySelector(".btn-ferma").addEventListener("click", () => fermaSuono(campanile.id));
+    statoRiproduzione.querySelector(".btn-ascolta").addEventListener("click", () => alternaAscolto(campanile.id));
+    card.appendChild(statoRiproduzione);
+
+    // Nomi veri delle dirette (es. "Angelus"), con un'etichetta generica finché l'app
+    // desktop non li ha ancora comunicati almeno una volta.
+    let nomiDirette = ["Diretta 1", "Diretta 2", "Diretta 3", "Diretta 4", "Diretta 5"];
+    if (sessione) {
+      try {
+        const rispostaNomi = await fetch(`${BASE_URL}/api/campanili/${campanile.id}/dirette`, {
+          headers: { Authorization: `Bearer ${sessione.token}` },
+        });
+        if (rispostaNomi.ok) nomiDirette = await rispostaNomi.json();
+      } catch { /* resta l'etichetta generica */ }
+    }
+
     const griglia = document.createElement("div");
     griglia.className = "griglia-dirette";
 
     for (let numero = 0; numero < 5; numero++) {
       const bottone = document.createElement("button");
       bottone.className = "btn-diretta";
-      bottone.innerHTML = `🔔 Diretta ${numero + 1}`;
+      bottone.innerHTML = `🔔 ${nomiDirette[numero] || `Diretta ${numero + 1}`}`;
       bottone.addEventListener("click", () => inviaComando(campanile.id, numero, bottone));
       griglia.appendChild(bottone);
     }
@@ -116,6 +153,169 @@ function mostraSchermataPrincipale(utente, campanili, admin) {
   }
 
   mostraSchermata(schermataPrincipale);
+  await avviaAscoltoStatoLive(campanili);
+}
+
+/// Si collega in tempo reale al server per sapere quando una suonata parte/finisce su uno
+/// dei campanili a cui l'utente ha accesso, e aggiorna la barra di avanzamento di conseguenza.
+async function avviaAscoltoStatoLive(campanili) {
+  const sessione = leggiSessione();
+  if (!sessione || campanili.length === 0) return;
+
+  if (connessioneHub) {
+    try { await connessioneHub.stop(); } catch { /* ignora */ }
+  }
+
+  connessioneHub = new signalR.HubConnectionBuilder()
+    .withUrl(`${BASE_URL}/hub/campanile`)
+    .withAutomaticReconnect()
+    .build();
+
+  connessioneHub.on("StatoSuonataAvviata", (idCampanile, nomeSuonata, durataSecondi) => {
+    avviaBarraProgresso(idCampanile, nomeSuonata, durataSecondi);
+  });
+  connessioneHub.on("StatoSuonataFerma", (idCampanile) => {
+    fermaBarraProgresso(idCampanile);
+  });
+
+  try {
+    await connessioneHub.start();
+    for (const campanile of campanili) {
+      await connessioneHub.invoke("AscoltaCampanile", campanile.id);
+    }
+  } catch {
+    // Non gravissimo: la barra di avanzamento in tempo reale non funzionerà finché non si
+    // ricollega da solo, ma il resto della pagina (far partire le dirette) continua a funzionare.
+  }
+}
+
+function formattaTempo(secondiTotali) {
+  const s = Math.max(0, Math.round(secondiTotali));
+  const minuti = Math.floor(s / 60);
+  const secondi = s % 60;
+  return `${minuti}:${secondi.toString().padStart(2, "0")}`;
+}
+
+const ascoltoAttivo = {}; // idCampanile -> true/false
+const urlAudioAttivi = {}; // idCampanile -> URL temporaneo dell'audio in corso, da liberare dopo
+
+function alternaAscolto(idCampanile) {
+  ascoltoAttivo[idCampanile] = !ascoltoAttivo[idCampanile];
+  const contenitore = document.getElementById(`stato-${idCampanile}`);
+  if (!contenitore) return;
+
+  const bottone = contenitore.querySelector(".btn-ascolta");
+  if (ascoltoAttivo[idCampanile]) {
+    bottone.textContent = "🔊 In ascolto";
+    bottone.classList.add("attivo");
+
+    // Se una suonata è già in corso in questo momento, aggancia subito l'ascolto,
+    // partendo dal punto in cui si trova adesso — non serve aspettare la prossima.
+    if (timerBarra[idCampanile]) {
+      avviaAscoltoAudio(idCampanile);
+    }
+  } else {
+    bottone.textContent = "🔇 Ascolta dal vivo";
+    bottone.classList.remove("attivo");
+    contenitore.querySelector(".audio-diretta").pause();
+  }
+}
+
+async function avviaAscoltoAudio(idCampanile) {
+  const sessione = leggiSessione();
+  const contenitore = document.getElementById(`stato-${idCampanile}`);
+  if (!sessione || !contenitore) return;
+
+  try {
+    const risposta = await fetch(`${BASE_URL}/api/campanili/${idCampanile}/audio-in-corso?t=${Date.now()}`, {
+      headers: { Authorization: `Bearer ${sessione.token}` },
+    });
+    if (!risposta.ok) return;
+
+    const blob = await risposta.blob();
+    const url = URL.createObjectURL(blob);
+    urlAudioAttivi[idCampanile] = url;
+
+    const elementoAudio = contenitore.querySelector(".audio-diretta");
+    elementoAudio.src = url;
+
+    // Se la suonata era già a metà quando è partito l'ascolto, salta al punto giusto
+    // invece di ripartire dall'inizio.
+    const info = timerBarra[idCampanile];
+    if (info) {
+      const trascorsi = (Date.now() - info.inizio) / 1000;
+      elementoAudio.addEventListener("loadedmetadata", () => {
+        elementoAudio.currentTime = Math.min(trascorsi, elementoAudio.duration || trascorsi);
+      }, { once: true });
+    }
+
+    elementoAudio.play().catch(() => { /* il browser potrebbe bloccarlo se manca un'interazione recente: non grave */ });
+  } catch { /* connessione instabile: niente audio questa volta, il resto continua a funzionare */ }
+}
+
+function avviaBarraProgresso(idCampanile, nomeSuonata, durataSecondi) {
+  const contenitore = document.getElementById(`stato-${idCampanile}`);
+  if (!contenitore) return;
+
+  fermaBarraProgresso(idCampanile); // nel caso ce ne fosse già una in corso
+
+  contenitore.classList.add("attivo");
+  contenitore.querySelector(".nome-suonata").textContent = nomeSuonata;
+  const riempimento = contenitore.querySelector(".riempimento");
+  const tempo = contenitore.querySelector(".tempo");
+  riempimento.style.width = "0%";
+  tempo.textContent = `0:00 / ${formattaTempo(durataSecondi)}`;
+
+  if (ascoltoAttivo[idCampanile]) {
+    avviaAscoltoAudio(idCampanile);
+  }
+
+  const inizio = Date.now();
+  const intervalId = setInterval(() => {
+    const trascorsi = (Date.now() - inizio) / 1000;
+    const percentuale = Math.min(100, (trascorsi / durataSecondi) * 100);
+    riempimento.style.width = `${percentuale}%`;
+    tempo.textContent = `${formattaTempo(trascorsi)} / ${formattaTempo(durataSecondi)}`;
+
+    if (trascorsi >= durataSecondi) {
+      fermaBarraProgresso(idCampanile);
+    }
+  }, 250);
+
+  timerBarra[idCampanile] = { intervalId, inizio };
+}
+
+function fermaBarraProgresso(idCampanile) {
+  const precedente = timerBarra[idCampanile];
+  if (precedente) {
+    clearInterval(precedente.intervalId);
+    delete timerBarra[idCampanile];
+  }
+
+  const contenitore = document.getElementById(`stato-${idCampanile}`);
+  if (contenitore) {
+    contenitore.classList.remove("attivo");
+    const elementoAudio = contenitore.querySelector(".audio-diretta");
+    elementoAudio.pause();
+    elementoAudio.removeAttribute("src");
+  }
+
+  if (urlAudioAttivi[idCampanile]) {
+    URL.revokeObjectURL(urlAudioAttivi[idCampanile]);
+    delete urlAudioAttivi[idCampanile];
+  }
+}
+
+async function fermaSuono(idCampanile) {
+  const sessione = leggiSessione();
+  if (!sessione) { esci(); return; }
+
+  try {
+    await fetch(`${BASE_URL}/api/campanili/${idCampanile}/ferma`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${sessione.token}` },
+    });
+  } catch { /* la barra si aggiornerà comunque quando arriva la conferma, o resta com'è */ }
 }
 
 async function chiamataAutenticata(percorso, opzioni = {}) {
@@ -267,13 +467,13 @@ bottoneEsci.addEventListener("click", esci);
     });
     if (risposta.ok) {
       const dati = await risposta.json();
-      mostraSchermataPrincipale(dati.utente, dati.campanili, dati.admin);
+      await mostraSchermataPrincipale(dati.utente, dati.campanili, dati.admin);
     } else {
       esci();
     }
   } catch {
     // Server irraggiungibile al momento: mostra comunque la schermata principale con i dati
     // salvati, così l'app resta usabile a colpo d'occhio anche con connessione instabile.
-    mostraSchermataPrincipale(sessione.utente, sessione.campanili, sessione.admin);
+    await mostraSchermataPrincipale(sessione.utente, sessione.campanili, sessione.admin);
   }
 })();

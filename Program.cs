@@ -1,32 +1,20 @@
 using Campanile.Server;
 using Microsoft.AspNetCore.SignalR;
-using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
-
-// Nel container di Render, tenere sotto controllo il file di configurazione per eventuali
-// modifiche (comportamento di default di ASP.NET Core) va in conflitto con un limite di sistema
-// (inotify) e manda in crash il programma all'avvio. Non ci serve comunque, quindi lo disattivo.
-builder.Configuration.Sources.Clear();
-builder.Configuration
-    .SetBasePath(builder.Environment.ContentRootPath)
-    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
-    .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: false)
-    .AddEnvironmentVariables();
-
 builder.Services.AddSignalR();
 builder.Services.AddCors(opzioni =>
 {
     opzioni.AddDefaultPolicy(policy => policy.AllowAnyHeader().AllowAnyMethod().SetIsOriginAllowed(_ => true).AllowCredentials());
 });
 
-var stringaConnessioneGrezza = builder.Configuration.GetConnectionString("Postgres")
+var stringaConnessione = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("Manca la stringa di connessione 'ConnectionStrings:Postgres'.");
-var stringaConnessione = ConvertiStringaConnessione(stringaConnessioneGrezza);
 
 var database = new DatabaseUtenti(stringaConnessione);
 builder.Services.AddSingleton(database);
 builder.Services.AddSingleton<AuthService>();
+builder.Services.AddSingleton<StatoCampanili>();
 
 var app = builder.Build();
 app.UseCors();
@@ -106,6 +94,64 @@ app.MapPost("/api/campanili/{idCampanile}/diretta/{numeroDiretta:int}",
         return Results.Ok(new { inviato = true, idCampanile, numeroDiretta });
     });
 
+// Ferma la suonata in corso su un campanile, da remoto.
+app.MapPost("/api/campanili/{idCampanile}/ferma",
+    async (string idCampanile, HttpRequest richiesta, AuthService auth, IHubContext<CampanileHub> hub) =>
+    {
+        var sessione = ValidaRichiesta(richiesta, auth);
+        if (sessione is null)
+            return Results.Json(new { errore = "Sessione scaduta, rifai il login." }, statusCode: 401);
+
+        if (!sessione.CampaniliConsentiti.Contains(idCampanile))
+            return Results.Json(new { errore = "Non hai accesso a questo campanile." }, statusCode: 403);
+
+        await hub.Clients.Group(CampanileHub.GruppoPer(idCampanile)).SendAsync("FermaSuono");
+        return Results.Ok(new { fermato = true, idCampanile });
+    });
+
+// Restituisce i nomi attuali delle 5 dirette di un campanile (es. "Angelus" invece di "Diretta 1"),
+// così la web app può mostrarli sui pulsanti.
+app.MapGet("/api/campanili/{idCampanile}/dirette",
+    (string idCampanile, HttpRequest richiesta, AuthService auth, StatoCampanili stato) =>
+    {
+        var sessione = ValidaRichiesta(richiesta, auth);
+        if (sessione is null)
+            return Results.Json(new { errore = "Sessione scaduta, rifai il login." }, statusCode: 401);
+
+        if (!sessione.CampaniliConsentiti.Contains(idCampanile))
+            return Results.Json(new { errore = "Non hai accesso a questo campanile." }, statusCode: 403);
+
+        return Results.Ok(stato.LeggiNomiDirette(idCampanile));
+    });
+
+// L'app desktop carica qui il file che sta suonando in questo momento, così chi vuole
+// "ascoltare in diretta" da remoto può scaricarlo e riprodurlo.
+app.MapPut("/api/campanili/{idCampanile}/audio-in-corso", async (string idCampanile, HttpRequest richiesta, StatoCampanili stato) =>
+{
+    using var memoria = new MemoryStream();
+    await richiesta.Body.CopyToAsync(memoria);
+    var tipoContenuto = string.IsNullOrWhiteSpace(richiesta.ContentType) ? "audio/wav" : richiesta.ContentType;
+    stato.ImpostaAudioInCorso(idCampanile, memoria.ToArray(), tipoContenuto);
+    return Results.Ok();
+});
+
+// Il telefono scarica qui l'audio della suonata in corso, per riprodurlo (funzione "ascolta in diretta").
+app.MapGet("/api/campanili/{idCampanile}/audio-in-corso", (string idCampanile, HttpRequest richiesta, AuthService auth, StatoCampanili stato) =>
+{
+    var sessione = ValidaRichiesta(richiesta, auth);
+    if (sessione is null)
+        return Results.Json(new { errore = "Sessione scaduta, rifai il login." }, statusCode: 401);
+
+    if (!sessione.CampaniliConsentiti.Contains(idCampanile))
+        return Results.Json(new { errore = "Non hai accesso a questo campanile." }, statusCode: 403);
+
+    var audio = stato.LeggiAudioInCorso(idCampanile);
+    if (audio is null)
+        return Results.NotFound();
+
+    return Results.File(audio.Value.Dati, audio.Value.TipoContenuto);
+});
+
 // ===================== PANNELLO DI AMMINISTRAZIONE (solo utenti admin) =====================
 
 app.MapGet("/api/admin/utenti", async (HttpRequest richiesta, AuthService auth, DatabaseUtenti db) =>
@@ -156,10 +202,6 @@ app.MapDelete("/api/admin/utenti/{nome}", async (string nome, HttpRequest http, 
     return Results.Ok(new { fatto = true });
 });
 
-// Qualsiasi indirizzo non riconosciuto (es. un vecchio QR code con un percorso diverso)
-// mostra comunque la pagina principale, invece di un errore "pagina non trovata".
-app.MapFallbackToFile("index.html");
-
 app.Run();
 
 static InfoSessione? ValidaRichiesta(HttpRequest richiesta, AuthService auth)
@@ -167,39 +209,6 @@ static InfoSessione? ValidaRichiesta(HttpRequest richiesta, AuthService auth)
     var intestazione = richiesta.Headers.Authorization.ToString();
     var token = intestazione.StartsWith("Bearer ") ? intestazione["Bearer ".Length..] : null;
     return auth.Valida(token);
-}
-
-/// <summary>
-/// Neon (e molti altri servizi Postgres) forniscono l'indirizzo nel formato "URL"
-/// (postgresql://utente:password@host/database) — ma Npgsql vuole invece il formato classico
-/// "chiave=valore;". Questa funzione converte automaticamente dal primo formato al secondo,
-/// così basta incollare la stringa di Neon così com'è, senza doverla riscrivere a mano.
-/// </summary>
-static string ConvertiStringaConnessione(string valore)
-{
-    if (!valore.StartsWith("postgres://", StringComparison.OrdinalIgnoreCase) &&
-        !valore.StartsWith("postgresql://", StringComparison.OrdinalIgnoreCase))
-    {
-        return valore; // è già nel formato "chiave=valore;" che Npgsql si aspetta
-    }
-
-    var uri = new Uri(valore);
-    var userInfo = uri.UserInfo.Split(':', 2);
-    var username = Uri.UnescapeDataString(userInfo[0]);
-    var password = userInfo.Length > 1 ? Uri.UnescapeDataString(userInfo[1]) : "";
-    var nomeDatabase = uri.AbsolutePath.TrimStart('/');
-
-    var costruttore = new NpgsqlConnectionStringBuilder
-    {
-        Host = uri.Host,
-        Port = uri.Port > 0 ? uri.Port : 5432,
-        Username = username,
-        Password = password,
-        Database = nomeDatabase,
-        SslMode = SslMode.Require,
-    };
-
-    return costruttore.ConnectionString;
 }
 
 static InfoSessione? ValidaRichiestaAdmin(HttpRequest richiesta, AuthService auth)

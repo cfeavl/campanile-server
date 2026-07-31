@@ -225,4 +225,32 @@ public class DatabaseUtenti(string stringaConnessione)
         cmd.Parameters.AddWithValue("@nome", nome);
         await cmd.ExecuteNonQueryAsync();
     }
+
+    /// <summary>Elimina un campanile. Grazie al collegamento nel database, sparisce in automatico
+    /// anche l'accesso che eventuali utenti avevano a quel campanile — senza doverlo fare a mano.</summary>
+    public async Task EliminaCampanileAsync(string id)
+    {
+        await using var conn = new NpgsqlConnection(stringaConnessione);
+        await conn.OpenAsync();
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM campanili WHERE id = @id;";
+        cmd.Parameters.AddWithValue("@id", id);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>Cambia solo la password di un utente già esistente, senza toccare i campanili
+    /// a cui ha già accesso.</summary>
+    public async Task CambiaPasswordUtenteAsync(string nome, string passwordHash, string salt)
+    {
+        await using var conn = new NpgsqlConnection(stringaConnessione);
+        await conn.OpenAsync();
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE utenti SET password_hash = @hash, salt = @salt WHERE nome = @nome;";
+        cmd.Parameters.AddWithValue("@nome", nome);
+        cmd.Parameters.AddWithValue("@hash", passwordHash);
+        cmd.Parameters.AddWithValue("@salt", salt);
+        await cmd.ExecuteNonQueryAsync();
+    }
 }

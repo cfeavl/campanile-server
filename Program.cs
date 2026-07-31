@@ -243,6 +243,31 @@ app.MapDelete("/api/admin/utenti/{nome}", async (string nome, HttpRequest http, 
     return Results.Ok(new { fatto = true });
 });
 
+// Elimina un campanile (e automaticamente l'accesso che gli utenti avevano su di esso).
+app.MapDelete("/api/admin/campanili/{id}", async (string id, HttpRequest http, AuthService auth, DatabaseUtenti db) =>
+{
+    var sessione = ValidaRichiestaAdmin(http, auth);
+    if (sessione is null) return Results.Json(new { errore = "Non autorizzato." }, statusCode: 403);
+
+    await db.EliminaCampanileAsync(id);
+    return Results.Ok(new { fatto = true });
+});
+
+// Cambia solo la password di un utente già esistente.
+app.MapPost("/api/admin/utenti/{nome}/password",
+    async (string nome, RichiestaCambioPassword richiesta, HttpRequest http, AuthService auth, DatabaseUtenti db) =>
+    {
+        var sessione = ValidaRichiestaAdmin(http, auth);
+        if (sessione is null) return Results.Json(new { errore = "Non autorizzato." }, statusCode: 403);
+
+        if (string.IsNullOrWhiteSpace(richiesta.NuovaPassword))
+            return Results.Json(new { errore = "La password non può essere vuota." }, statusCode: 400);
+
+        var (hash, salt) = AuthService.GeneraHashPassword(richiesta.NuovaPassword);
+        await db.CambiaPasswordUtenteAsync(nome, hash, salt);
+        return Results.Ok(new { fatto = true });
+    });
+
 app.Run();
 
 static InfoSessione? ValidaRichiesta(HttpRequest richiesta, AuthService auth)
@@ -295,3 +320,4 @@ public record RichiestaLogin(string Utente, string Password);
 public record RichiestaCampanile(string Id, string Nome);
 public record RichiestaNuovoUtente(string Nome, string Password, List<string>? CampaniliConsentiti);
 public record RichiestaNotificaAvviata(string Nome, double DurataSecondi);
+public record RichiestaCambioPassword(string NuovaPassword);

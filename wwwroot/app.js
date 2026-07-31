@@ -370,6 +370,63 @@ async function caricaPannelloAdmin() {
     listaCampaniliDiv.appendChild(riga);
   }
 
+  // Elenco dei campanili già registrati, con la possibilità di rinominarli o eliminarli.
+  const listaCampaniliEsistentiDiv = document.getElementById("listaCampaniliEsistenti");
+  listaCampaniliEsistentiDiv.innerHTML = "";
+  for (const c of campanili) {
+    const riga = document.createElement("div");
+    riga.style.display = "flex";
+    riga.style.alignItems = "center";
+    riga.style.gap = "8px";
+    riga.style.padding = "8px 0";
+    riga.style.borderBottom = "1px solid var(--bordo)";
+
+    const campoNome = document.createElement("input");
+    campoNome.type = "text";
+    campoNome.value = c.nome;
+    campoNome.style.flex = "1";
+    campoNome.style.marginBottom = "0";
+
+    const testoId = document.createElement("span");
+    testoId.textContent = c.id;
+    testoId.style.fontSize = "12px";
+    testoId.style.color = "var(--testo-attenuato)";
+    testoId.style.whiteSpace = "nowrap";
+
+    const bottoneSalva = document.createElement("button");
+    bottoneSalva.textContent = "Salva";
+    bottoneSalva.className = "btn-secondario";
+    bottoneSalva.style.width = "auto";
+    bottoneSalva.style.padding = "6px 12px";
+    bottoneSalva.addEventListener("click", async () => {
+      const nuovoNome = campoNome.value.trim();
+      if (!nuovoNome) { alert("Il nome non può essere vuoto."); return; }
+      await chiamataAutenticata("/api/admin/campanili", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: c.id, nome: nuovoNome }),
+      });
+      caricaPannelloAdmin();
+    });
+
+    const bottoneElimina = document.createElement("button");
+    bottoneElimina.textContent = "Elimina";
+    bottoneElimina.className = "btn-secondario";
+    bottoneElimina.style.width = "auto";
+    bottoneElimina.style.padding = "6px 12px";
+    bottoneElimina.addEventListener("click", async () => {
+      if (!confirm(`Eliminare il campanile "${c.nome}"? Chi lo aveva assegnato perderà l'accesso.`)) return;
+      await chiamataAutenticata(`/api/admin/campanili/${encodeURIComponent(c.id)}`, { method: "DELETE" });
+      caricaPannelloAdmin();
+    });
+
+    riga.appendChild(campoNome);
+    riga.appendChild(testoId);
+    riga.appendChild(bottoneSalva);
+    riga.appendChild(bottoneElimina);
+    listaCampaniliEsistentiDiv.appendChild(riga);
+  }
+
   const rispostaUtenti = await chiamataAutenticata("/api/admin/utenti");
   const utenti = rispostaUtenti ? await rispostaUtenti.json() : [];
 
@@ -380,10 +437,35 @@ async function caricaPannelloAdmin() {
     riga.style.display = "flex";
     riga.style.justifyContent = "space-between";
     riga.style.alignItems = "center";
+    riga.style.gap = "8px";
     riga.style.padding = "8px 0";
     riga.style.borderBottom = "1px solid var(--bordo)";
     const campaniliUtente = u.campaniliConsentiti?.join(", ") || "nessuno";
-    riga.innerHTML = `<span>${u.nome}${u.admin ? " (admin)" : ""} — ${campaniliUtente}</span>`;
+
+    const testo = document.createElement("span");
+    testo.textContent = `${u.nome}${u.admin ? " (admin)" : ""} — ${campaniliUtente}`;
+    riga.appendChild(testo);
+
+    const bottoniDiv = document.createElement("div");
+    bottoniDiv.style.display = "flex";
+    bottoniDiv.style.gap = "6px";
+
+    const bottoneCambiaPassword = document.createElement("button");
+    bottoneCambiaPassword.textContent = "Cambia password";
+    bottoneCambiaPassword.className = "btn-secondario";
+    bottoneCambiaPassword.style.width = "auto";
+    bottoneCambiaPassword.style.padding = "6px 12px";
+    bottoneCambiaPassword.addEventListener("click", async () => {
+      const nuovaPassword = prompt(`Nuova password per "${u.nome}":`);
+      if (!nuovaPassword) return;
+      await chiamataAutenticata(`/api/admin/utenti/${encodeURIComponent(u.nome)}/password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nuovaPassword }),
+      });
+      alert("Password aggiornata.");
+    });
+    bottoniDiv.appendChild(bottoneCambiaPassword);
 
     if (!u.admin) {
       const bottoneElimina = document.createElement("button");
@@ -395,8 +477,10 @@ async function caricaPannelloAdmin() {
         await chiamataAutenticata(`/api/admin/utenti/${encodeURIComponent(u.nome)}`, { method: "DELETE" });
         caricaPannelloAdmin();
       });
-      riga.appendChild(bottoneElimina);
+      bottoniDiv.appendChild(bottoneElimina);
     }
+
+    riga.appendChild(bottoniDiv);
     listaUtentiDiv.appendChild(riga);
   }
 }
